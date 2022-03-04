@@ -1,0 +1,183 @@
+---
+title: "p8106 hw2"
+author: "Yijing Tao yt2785"
+date: '2022-03-02'
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readxl)
+library(ISLR)
+library(glmnet)
+library(caret)
+library(corrplot)
+library(plotmo)
+library(mgcv)
+library(earth)
+library(caret)
+library(glmnet)
+library(mlbench)
+library(pROC)
+library(pdp)
+library(vip)
+library(AppliedPredictiveModeling)
+```
+
+```{r}
+college_df_nores = read_csv("./College.csv") %>% 
+  data.frame() %>% 
+  na.omit() %>% 
+  select(-Outstate)
+college_df_res = read_csv("./College.csv") %>% 
+  data.frame() %>% 
+  na.omit() %>% 
+  select(Outstate)
+college_df = cbind(college_df_nores, college_df_res) %>% 
+  data.frame()
+
+college_df2 <- model.matrix(Outstate ~ ., college_df)[ ,-1]
+
+set.seed(2022)
+trainRows <- createDataPartition(college_df$Outstate, p = .8, list = F)
+
+# matrix of predictors (glmnet uses input matrix)
+x1 <- college_df2[trainRows,]
+# vector of response
+y1 <- college_df$Outstate[trainRows]
+train <- college_df[trainRows,]
+# matrix of predictors (glmnet uses input matrix)
+x2 <- college_df2[-trainRows,]
+# vector of response
+y2 <- college_df$Outstate[-trainRows]
+test <- college_df[-trainRows,]
+
+ctrl <- trainControl(method = "repeatedcv",
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+```
+
+## (a) Perform exploratory data analysis using the training data (e.g., scatter plots of response vs. predictors).
+
+```{r}
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col <- rgb(.2, .4, .2, .5)
+theme1$plot.symbol$pch <- 16
+theme1$plot.line$col <- rgb(.8, .1, .1, 1)
+theme1$plot.line$lwd <- 2
+theme1$strip.background$col <- rgb(.0, .2, .6, .2)
+trellis.par.set(theme1)
+
+featurePlot(x = train[,2:17], 
+            y = train[,18], 
+            plot = "scatter", 
+            span = .5, 
+            labels = c("Predictors","Y"),
+            type = c("p"))
+```
+
+## (b) Fit smoothing spline models using Terminal as the only predictor of Outstate for a range of degrees of freedom, as well as the degree of freedom obtained by generalized cross-validation, and plot the resulting fits. Describe the results obtained.
+
+```{r}
+fit.ss <- smooth.spline(train$Terminal, train$Outstate, cv = TRUE)
+fit.ss$df
+
+Terminal.grid <- seq(from = 14, to = 110, by = 1)
+pred.ss <- predict(fit.ss,
+                   x = Terminal.grid)
+
+pred.ss.df <- data.frame(pred = pred.ss$y,
+                         Terminal = Terminal.grid)
+
+p <- ggplot(data = train, aes(x = Terminal, y = Outstate)) +
+     geom_point(color = rgb(.2, .4, .2, .5))
+p +
+geom_line(aes(x = Terminal, y = pred), data = pred.ss.df,
+          color = rgb(.8, .1, .1, 1)) + theme_bw()
+```
+**From the plot we can see that the model we fit will lead to a smooth line, and the trend of the smooth line is the same as the trend of the points of the real data set. So we can consider the model is a good fit.**
+
+## (c) Fit a generalized additive model (GAM) using all the predictors. Plot the results and explain your findings. Report the test error.
+
+```{r}
+gam.fit <- gam(Outstate ~ Apps+Accept+Enroll+s(Top10perc)+Top25perc+s(F.Undergrad)+P.Undergrad+s(Room.Board)+s(Books)+Personal+s(PhD)+Terminal+s(S.F.Ratio)+perc.alumni+s(Expend)+s(Grad.Rate), data = train)
+
+plot(gam.fit)
+
+gam.pred <- predict(gam.fit, newdata = test[,2:17])
+# test error
+test_error_gam = mean((gam.pred - y2)^2)
+test_error_gam
+```
+
+```{r}
+ctrl <- trainControl(method = "repeatedcv",
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+set.seed(2)
+model.gam <- train(x = train[,2:17], 
+                  y = train$Outstate ,
+                   method = "gam",
+                   metric = "ROC",
+                   trControl = ctrl)
+
+
+model.gam$finalModel
+
+plot(model.gam$finalModel)
+```
+
+**After plotting the gam model, I found that only the variebles "Top10perc", "F.Undergrad", "Room.Board", "Books", "PhD", "S.F.Ratio Expend" and "Grad.Rate" are non-linear, so we only add "s()" to these variables when building the gam model. The test error is `r test_error_gam`.**
+
+## (d) Train a multivariate adaptive regression spline (MARS) model using all the predictors. Report the final model. Present the partial dependence plot of an arbitrary predictor in your final model. Report the test error.
+
+```{r}
+mars_grid <- expand.grid(degree = 1:3, 
+                         nprune = 2:15)
+
+set.seed(2)
+mars.fit <- train(x = train[,2:17], 
+                  y1,
+                  method = "earth",
+                  tuneGrid = expand.grid(degree = 1:4, 
+                                        nprune = 2:20),
+                  metric = "ROC",
+                  trControl = ctrl)
+
+pdp::partial(mars.fit, pred.var = c("Apps"), grid.resolution = 10) %>%
+  autoplot()
+
+
+mars.fit$bestTune
+
+coef(mars.fit$finalModel) 
+
+mars.pred <- predict(mars.fit, newdata = test[,2:17])
+# test error
+test_error_mars = mean((mars.pred - y2)^2)
+test_error_mars
+```
+**I presented the partial dependence plot of "Apps" in my final model. The test error is `r test_error_mars`.**
+
+## (e) In this data example, do you prefer the use of MARS model over a linear model when predicting the out-of-state tuition? Why?
+
+```{r}
+set.seed(2)
+lm.fit <- train(x = train[,2:17], 
+                  y1,
+                  method = "lm",
+                  trControl = ctrl1)
+```
+
+```{r}
+resamp <- resamples(list(LN = lm.fit,
+                         MARS = mars.fit))
+summary(resamp)
+
+bwplot(res, metric = "ROC")
+```
+**I prefer to use MARS model since it has a smaller RMSE**
